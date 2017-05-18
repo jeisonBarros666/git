@@ -853,7 +853,7 @@ static void interactive_main_loop(void)
 
 int cmd_clean(int argc, const char **argv, const char *prefix)
 {
-	int i, res;
+	int i, j, res;
 	int dry_run = 0, remove_directories = 0, quiet = 0, ignored = 0;
 	int ignored_only = 0, config_set = 0, errors = 0, gone = 1;
 	int rm_flags = REMOVE_DIR_KEEP_NESTED_GIT;
@@ -905,6 +905,9 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 				  " refusing to clean"));
 	}
 
+	if (remove_directories)
+		dir.flags |= DIR_SHOW_IGNORED_TOO | DIR_KEEP_UNTRACKED_CONTENTS;
+
 	if (force > 1)
 		rm_flags = 0;
 
@@ -926,11 +929,38 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 
 	fill_directory(&dir, &pathspec);
 
+	for (j = i = 0; i < dir.nr;) {
+		for (;
+		     j < dir.ignored_nr &&
+		       0 <= cmp_dir_entry(&dir.entries[i], &dir.ignored[j]);
+		     j++);
+
+		if ((j < dir.ignored_nr) &&
+				check_dir_entry_contains(dir.entries[i], dir.ignored[j])) {
+			/* skip any dir.entries which contains a dir.ignored */
+			free(dir.entries[i]);
+			dir.entries[i++] = NULL;
+		} else {
+			/* prune the contents of a dir.entries which will be removed */
+			struct dir_entry *ent = dir.entries[i++];
+			for (;
+			     i < dir.nr &&
+			       check_dir_entry_contains(ent, dir.entries[i]);
+			     i++) {
+				free(dir.entries[i]);
+				dir.entries[i] = NULL;
+			}
+		}
+	}
+
 	for (i = 0; i < dir.nr; i++) {
 		struct dir_entry *ent = dir.entries[i];
 		int matches = 0;
 		struct stat st;
 		const char *rel;
+
+		if (!ent)
+			continue;
 
 		if (!cache_name_is_other(ent->name, ent->len))
 			continue;
@@ -951,6 +981,12 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		rel = relative_path(ent->name, prefix, &buf);
 		string_list_append(&del_list, rel);
 	}
+
+	for (i = 0; i < dir.nr; i++)
+		free(dir.entries[i]);
+
+	for (i = 0; i < dir.ignored_nr; i++)
+		free(dir.ignored[i]);
 
 	if (interactive && del_list.nr > 0)
 		interactive_main_loop();
