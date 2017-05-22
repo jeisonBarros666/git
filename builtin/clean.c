@@ -851,9 +851,49 @@ static void interactive_main_loop(void)
 	}
 }
 
+static void simplify_untracked(struct dir_struct *dir)
+{
+	int src, dst, ign;
+
+	for (src = dst = ign = 0; src < dir->nr; src++) {
+		/*
+		 * Skip entries in ignored[] that cannot be inside
+		 * entries[src]
+		 */
+		while (ign < dir->ignored_nr &&
+		       0 <= cmp_dir_entry(&dir->entries[src], &dir->ignored[ign]))
+			ign++;
+
+		if (dir->ignored_nr <= ign ||
+		    !check_dir_entry_contains(dir->entries[src], dir->ignored[ign])) {
+			/*
+			 * entries[src] does not contain an ignored
+			 * path -- we need to keep it.  But we do not
+			 * want to show entries[] that are contained
+			 * in entries[src].
+			 */
+			struct dir_entry *ent = dir->entries[src++];
+			dir->entries[dst++] = ent;
+			while (src < dir->nr &&
+			       check_dir_entry_contains(ent, dir->entries[src])) {
+				free(dir->entries[src++]);
+			}
+			/* compensate for the outer loop's loop control */
+			src--;
+		} else {
+			/*
+			 * entries[src] contains an ignored path --
+			 * drop it.
+			 */
+			free(dir->entries[src]);
+		}
+	}
+	dir->nr = dst;
+}
+
 int cmd_clean(int argc, const char **argv, const char *prefix)
 {
-	int i, j, res;
+	int i, res;
 	int dry_run = 0, remove_directories = 0, quiet = 0, ignored = 0;
 	int ignored_only = 0, config_set = 0, errors = 0, gone = 1;
 	int rm_flags = REMOVE_DIR_KEEP_NESTED_GIT;
@@ -928,39 +968,13 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		       prefix, argv);
 
 	fill_directory(&dir, &pathspec);
-
-	for (j = i = 0; i < dir.nr;) {
-		for (;
-		     j < dir.ignored_nr &&
-		       0 <= cmp_dir_entry(&dir.entries[i], &dir.ignored[j]);
-		     j++);
-
-		if ((j < dir.ignored_nr) &&
-				check_dir_entry_contains(dir.entries[i], dir.ignored[j])) {
-			/* skip any dir.entries which contains a dir.ignored */
-			free(dir.entries[i]);
-			dir.entries[i++] = NULL;
-		} else {
-			/* prune the contents of a dir.entries which will be removed */
-			struct dir_entry *ent = dir.entries[i++];
-			for (;
-			     i < dir.nr &&
-			       check_dir_entry_contains(ent, dir.entries[i]);
-			     i++) {
-				free(dir.entries[i]);
-				dir.entries[i] = NULL;
-			}
-		}
-	}
+	simplify_untracked(&dir);
 
 	for (i = 0; i < dir.nr; i++) {
 		struct dir_entry *ent = dir.entries[i];
 		int matches = 0;
 		struct stat st;
 		const char *rel;
-
-		if (!ent)
-			continue;
 
 		if (!cache_name_is_other(ent->name, ent->len))
 			continue;
