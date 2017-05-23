@@ -857,6 +857,46 @@ static void interactive_main_loop(void)
 	}
 }
 
+static void simplify_untracked(struct dir_struct *dir)
+{
+	int src, dst, ign;
+
+	for (src = dst = ign = 0; src < dir->nr; src++) {
+		/*
+		 * Skip entries in ignored[] that cannot be inside
+		 * entries[src]
+		 */
+		while (ign < dir->ignored_nr &&
+		       0 <= cmp_dir_entry(&dir->entries[src], &dir->ignored[ign]))
+			ign++;
+
+		if (dir->ignored_nr <= ign ||
+		    !check_dir_entry_contains(dir->entries[src], dir->ignored[ign])) {
+			/*
+			 * entries[src] does not contain an ignored
+			 * path -- we need to keep it.  But we do not
+			 * want to show entries[] that are contained
+			 * in entries[src].
+			 */
+			struct dir_entry *ent = dir->entries[src++];
+			dir->entries[dst++] = ent;
+			while (src < dir->nr &&
+			       check_dir_entry_contains(ent, dir->entries[src])) {
+				free(dir->entries[src++]);
+			}
+			/* compensate for the outer loop's loop control */
+			src--;
+		} else {
+			/*
+			 * entries[src] contains an ignored path --
+			 * drop it.
+			 */
+			free(dir->entries[src]);
+		}
+	}
+	dir->nr = dst;
+}
+
 int cmd_clean(int argc, const char **argv, const char *prefix)
 {
 	int i, res;
@@ -911,6 +951,9 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 				  " refusing to clean"));
 	}
 
+	if (remove_directories)
+		dir.flags |= DIR_SHOW_IGNORED_TOO | DIR_KEEP_UNTRACKED_CONTENTS;
+
 	if (force > 1)
 		rm_flags = 0;
 
@@ -931,6 +974,7 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		       prefix, argv);
 
 	fill_directory(&dir, &the_index, &pathspec);
+	simplify_untracked(&dir);
 
 	for (i = 0; i < dir.nr; i++) {
 		struct dir_entry *ent = dir.entries[i];
@@ -957,6 +1001,12 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		rel = relative_path(ent->name, prefix, &buf);
 		string_list_append(&del_list, rel);
 	}
+
+	for (i = 0; i < dir.nr; i++)
+		free(dir.entries[i]);
+
+	for (i = 0; i < dir.ignored_nr; i++)
+		free(dir.ignored[i]);
 
 	if (interactive && del_list.nr > 0)
 		interactive_main_loop();
